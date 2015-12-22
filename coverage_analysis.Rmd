@@ -1,0 +1,135 @@
+---
+title: "Analysis of Coverage"
+author: "Bernhard Konrad"
+date: "December 22, 2015"
+output:
+  html_document:
+    keep_md: true
+---
+
+In this document we run a data quality analysis to check the observed receiver coverage. This is to control for outages, receivers not being in the water, or any other reason why a receiver did not detect any or as many fish as we would expect.
+
+First, let's load the required packages and data.
+
+```{r}
+library(rgeos)
+library(maptools)
+library(klesdatr)
+library(magrittr)
+library(lubridate)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+
+receiver <- klesdatr::receiver %>% 
+  mutate(Section_n = as.integer(Section),
+         Receiver_n = as.integer(Receiver))
+glimpse(receiver)
+
+#fish_with_location <- klesdatr::calculate_location() %>%
+#  mutate(Section_n = as.integer(Section))
+#print(glimpse(fish_with_location))
+
+detection <- klesdatr::detection %>% 
+  mutate(Receiver_n = as.integer(Receiver))
+glimpse(detection)
+
+section <- klesdatr::section %>%
+  mutate(Section_n = as.integer(Section))
+glimpse(section)
+```
+
+
+We have `r detection$Receiver_n %>% unique() %>% length()` distinct receivers, but let's start by looking at aggregated statistics.
+
+
+## Aggregate statistics
+
+First we plot the total number of sightings by section. We copy code from `klesdatr::plot_section()` and aggregate the detection dates by section.
+
+```{r}
+section_with_detections <- section %>% 
+  dplyr::right_join(detection %>%
+                      join(receiver) %>% 
+                      group_by(Section_n) %>% 
+                      summarize(total_sightings = n()) %>% 
+                      mutate(fraction_total_sightings = total_sightings/sum(total_sightings))
+                    )
+
+if (requireNamespace("rgeos", quietly = TRUE) & requireNamespace("maptools", quietly = TRUE)) {
+    section_sp  <- klesdatr::section_sp %>% ggplot2::fortify(region = "Section")
+    poly <- list(ggplot2::geom_polygon(data = dplyr::filter_(section_sp, ~!hole),
+                                       ggplot2::aes_string(x = "long / 1000", y = "lat / 1000", group = "id"),
+                                       alpha = 1/5,
+                                       color = "grey50"),
+                 ggplot2::geom_polygon(data = dplyr::filter_(section_sp, ~!hole),
+                                       ggplot2::aes_string(x = "long / 1000", y = "lat / 1000", group = "id"),
+                                       alpha = 1/5,
+                                       color = "grey50"))
+    } else {
+    message("The packages 'maptools' and rgeos' are required for the full version of this spatial plot.")
+    poly <- NULL
+    }
+
+ggplot2::ggplot(data = section_with_detections,
+                ggplot2::aes_string(x = "SectionX / 1000", y = "SectionY / 1000")) +
+    ggplot2::geom_point(aes(size = fraction_total_sightings)) +
+    poly + 
+    ggplot2::geom_text(aes(x = SectionX / 1000 + 2.5, label = Section_n), color = "blue", nudge_x = 2, size = 6) +
+    ggplot2::coord_equal() +
+    ggplot2::scale_x_continuous(name = "Easting (km)") +
+    ggplot2::scale_y_continuous(name = "Northing (km)")
+```
+
+
+Looking at the `DetectionDate` we see that the number of sightings is nowhere near constant...
+
+```{r}
+detection %>% 
+  group_by(DetectionDate) %>% 
+  summarize(total_sightings = n()) %>% 
+  ggplot(aes(x = DetectionDate, y = total_sightings, label = total_sightings)) +
+    geom_density(stat = "identity")
+```
+
+...but there don't seem to be obvious seasonal patterns.
+
+```{r}
+detection %>% 
+  mutate(month = lubridate::month(DetectionDate)) %>% 
+  group_by(month) %>% 
+  summarize(total_detections = n()) %>% 
+  ggplot(aes(x = month, y = total_detections, label = month.abb[month])) +
+    geom_bar(stat = "identity") +
+    geom_text(nudge_y = 80)
+```  
+
+[Todo: Add in how many receivers were active]
+
+
+## Individual receivers
+
+Looking at the number of sightings per receiver we see huge differences. Indeed, some receivers rarely picked up any signals.
+
+```{r}
+detection %>% 
+  group_by(Receiver_n) %>% 
+  summarize(total_sightings = n()) %>% 
+  ggplot(aes(x = Receiver_n, y = total_sightings, label = total_sightings)) +
+    geom_bar(stat = "identity") +
+    geom_text(color = "red", vjust = 0)
+```
+
+Here is a zoom at all the sightings for each receiver
+
+```{r}
+detection %>% 
+#  filter(Receiver_n == 1) %>% 
+  ggplot(aes(x = DetectionDate)) + 
+    geom_point(aes(y = 0), shape = 124) +
+    geom_density(kernel = "epanechnikov") +
+    facet_wrap(~ Receiver, scales = "free_y")
+```
+
+
+[Todo: Highlight gaps in detection. Did other receivers in the same section get any signal during those gaps?]
