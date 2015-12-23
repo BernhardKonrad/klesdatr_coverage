@@ -193,11 +193,22 @@ Looking at the `DetectionDate` we see that the number of sightings is nowhere ne
 
 
 ```r
-detection %>% 
-  group_by(DetectionDate) %>% 
-  summarize(total_sightings = n()) %>% 
-  ggplot(aes(x = DetectionDate, y = total_sightings, label = total_sightings)) +
-    geom_density(stat = "identity")
+deployment %>% 
+  group_by(DeploymentDate) %>% 
+  summarize(active_receivers = n()) %>% 
+  left_join(detection %>% 
+              group_by(DetectionDate) %>% 
+              summarize(total_sightings = n()),
+            by = c("DeploymentDate" = "DetectionDate")
+            ) %>% 
+  ggplot() +
+    geom_path(aes(x = DeploymentDate, y = total_sightings)) +
+    geom_path(aes(x = DeploymentDate, y = active_receivers), color = "red") + 
+    geom_text(aes(x = as.Date(ymd("2014-01-01")), y = 36), label = "active receivers", color = "red", size = 7)
+```
+
+```
+## Warning: Removed 191 rows containing missing values (geom_path).
 ```
 
 ![](coverage_analysis_files/figure-html/unnamed-chunk-3-1.png) 
@@ -206,18 +217,25 @@ detection %>%
 
 
 ```r
-detection %>% 
-  mutate(month = lubridate::month(DetectionDate)) %>% 
+deployment %>% 
+  group_by(DeploymentDate) %>% 
+  summarize(active_receivers = n()) %>% 
+  left_join(detection, by = c("DeploymentDate" = "DetectionDate")) %>% 
+  mutate(month = lubridate::month(DeploymentDate)) %>% 
   group_by(month) %>% 
-  summarize(total_detections = n()) %>% 
-  ggplot(aes(x = month, y = total_detections, label = month.abb[month])) +
+  summarize(total_detections = n(),
+            monthly_active_receivers = mean(active_receivers)
+            ) %>% 
+  mutate(normalized_total_detections = total_detections/sum(total_detections),
+            normalized_monthly_active_receivers = monthly_active_receivers/sum(monthly_active_receivers)) %>% 
+  ggplot(aes(x = month, y = normalized_total_detections, label = month.abb[month])) +
     geom_bar(stat = "identity") +
-    geom_text(nudge_y = 80)
+    geom_line(aes(y = normalized_monthly_active_receivers), color = "red", size = 2) +
+    geom_text(aes(x = 9, y = 0.095), label = "normalized mean \n # active receivers", color = "red", size = 5) +
+  geom_text(nudge_y = 0.002)
 ```
 
 ![](coverage_analysis_files/figure-html/unnamed-chunk-4-1.png) 
-
-[Todo: Add in how many receivers were active]
 
 
 ## Individual receivers
@@ -252,3 +270,44 @@ detection %>%
 
 
 [Todo: Highlight gaps in detection. Did other receivers in the same section get any signal during those gaps?]
+
+
+
+```r
+# Folds in the non-active days into deployment. May not be as useful as I thought, but now it's done and can be used if convenient.
+
+df_date_sequence <- seq(min(deployment$DeploymentDate), max(deployment$DeploymentDate), by = '1 day')
+
+non_active_days <- function(n_receiver){
+  setdiff(ymd(as.character(df_date_sequence)), ymd(as.character(deployment$DeploymentDate[as.integer(deployment$Receiver) == n_receiver]))) %>% 
+    as.POSIXct(origin="1970-01-01") %>% 
+    as.Date
+}
+
+df_with_nonActive_days <- function(n_receiver){
+  if (length(non_active_days(n_receiver)) > 0) {
+    data.frame(
+      dayte = non_active_days(n_receiver),
+      Receiver_n = n_receiver,
+      was_active = FALSE
+    )
+  } else NULL
+}
+
+complete_df <- function(){
+  df <- deployment %>% 
+    transmute(
+      dayte = DeploymentDate,
+      was_active = TRUE,
+      Receiver_n = as.integer(Receiver))
+  for (n in unique(df$Receiver_n)) {
+    new <- df_with_nonActive_days(n)
+    if (!is.null(new)) df <- rbind(df, new)
+  }
+  df
+}
+
+full_deployment <- complete_df()
+
+stopifnot(length(df_date_sequence) * length(unique(deployment$Receiver)) == nrow(full_deployment))
+```
